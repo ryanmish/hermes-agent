@@ -330,12 +330,9 @@ class SendBlueAdapter(BasePlatformAdapter):
         from aiohttp import web
         import hmac
 
-        # Verify webhook secret if configured
+        # Verify webhook secret if configured (SendBlue sends it in sb-signing-secret header)
         if self._webhook_secret:
-            provided = (
-                request.headers.get("X-Webhook-Secret", "")
-                or request.query.get("secret", "")
-            )
+            provided = request.headers.get("sb-signing-secret", "")
             if not hmac.compare_digest(provided, self._webhook_secret):
                 logger.warning("[sendblue] webhook rejected: invalid secret")
                 return web.json_response({"error": "unauthorized"}, status=401)
