@@ -135,6 +135,7 @@ PLATFORMS = {
     "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
     "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
     "webhook": {"label": "🔗 Webhook", "default_toolset": "hermes-webhook"},
+    "sendblue": {"label": "💬 SendBlue", "default_toolset": "hermes-sendblue"},
 }
 
 

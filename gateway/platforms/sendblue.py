@@ -277,7 +277,7 @@ class SendBlueAdapter(BasePlatformAdapter):
         self._stop_typing(chat_id)
         return last_result
 
-    async def send_typing(self, chat_id: str) -> None:
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator to the chat."""
         await self._send_typing_indicator(chat_id)
 
