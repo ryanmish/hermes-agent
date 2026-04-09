@@ -64,6 +64,7 @@ class Platform(Enum):
     FEISHU = "feishu"
     WECOM = "wecom"
     SENDBLUE = "sendblue"
+    BLUEBUBBLES = "bluebubbles"
 
 
 @dataclass
@@ -290,6 +291,9 @@ class GatewayConfig:
                 connected.append(platform)
             # SendBlue uses API key/secret pair
             elif platform == Platform.SENDBLUE and os.getenv("SENDBLUE_API_KEY"):
+                connected.append(platform)
+            # BlueBubbles uses extra dict for local server config
+            elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
                 connected.append(platform)
         return connected
     
@@ -560,6 +564,18 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
                     os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+                # ignored_channels: channels where bot never responds (even when mentioned)
+                ic = discord_cfg.get("ignored_channels")
+                if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):
+                    if isinstance(ic, list):
+                        ic = ",".join(str(v) for v in ic)
+                    os.environ["DISCORD_IGNORED_CHANNELS"] = str(ic)
+                # no_thread_channels: channels where bot responds directly without creating thread
+                ntc = discord_cfg.get("no_thread_channels")
+                if ntc is not None and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
+                    if isinstance(ntc, list):
+                        ntc = ",".join(str(v) for v in ntc)
+                    os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
 
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})
@@ -574,6 +590,8 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+                if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
+                    os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
 
             whatsapp_cfg = yaml_cfg.get("whatsapp", {})
             if isinstance(whatsapp_cfg, dict):
@@ -701,6 +719,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             chat_id=discord_home,
             name=os.getenv("DISCORD_HOME_CHANNEL_NAME", "Home"),
         )
+    
+    # Reply threading mode for Discord (off/first/all)
+    discord_reply_mode = os.getenv("DISCORD_REPLY_TO_MODE", "").lower()
+    if discord_reply_mode in ("off", "first", "all"):
+        if Platform.DISCORD not in config.platforms:
+            config.platforms[Platform.DISCORD] = PlatformConfig()
+        config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
     
     # WhatsApp (typically uses different auth mechanism)
     whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in ("true", "1", "yes")
@@ -944,6 +969,29 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.SENDBLUE,
             chat_id=sb_home,
             name=os.getenv("SENDBLUE_HOME_CHANNEL_NAME", "Home"),
+        )
+
+    # BlueBubbles (iMessage)
+    bluebubbles_server_url = os.getenv("BLUEBUBBLES_SERVER_URL")
+    bluebubbles_password = os.getenv("BLUEBUBBLES_PASSWORD")
+    if bluebubbles_server_url and bluebubbles_password:
+        if Platform.BLUEBUBBLES not in config.platforms:
+            config.platforms[Platform.BLUEBUBBLES] = PlatformConfig()
+        config.platforms[Platform.BLUEBUBBLES].enabled = True
+        config.platforms[Platform.BLUEBUBBLES].extra.update({
+            "server_url": bluebubbles_server_url.rstrip("/"),
+            "password": bluebubbles_password,
+            "webhook_host": os.getenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
+            "webhook_port": int(os.getenv("BLUEBUBBLES_WEBHOOK_PORT", "8645")),
+            "webhook_path": os.getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
+            "send_read_receipts": os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true").lower() in ("true", "1", "yes"),
+        })
+    bluebubbles_home = os.getenv("BLUEBUBBLES_HOME_CHANNEL")
+    if bluebubbles_home and Platform.BLUEBUBBLES in config.platforms:
+        config.platforms[Platform.BLUEBUBBLES].home_channel = HomeChannel(
+            platform=Platform.BLUEBUBBLES,
+            chat_id=bluebubbles_home,
+            name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
         )
 
     # Session settings

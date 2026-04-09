@@ -101,7 +101,7 @@ def _handle_send(args):
     target = args.get("target", "")
     message = args.get("message", "")
     if not target or not message:
-        return json.dumps({"error": "Both 'target' and 'message' are required when action='send'"})
+        return tool_error("Both 'target' and 'message' are required when action='send'")
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
@@ -134,7 +134,7 @@ def _handle_send(args):
 
     from tools.interrupt import is_interrupted
     if is_interrupted():
-        return json.dumps({"error": "Interrupted"})
+        return tool_error("Interrupted")
 
     try:
         from gateway.config import load_gateway_config, Platform
@@ -148,6 +148,7 @@ def _handle_send(args):
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "bluebubbles": Platform.BLUEBUBBLES,
         "matrix": Platform.MATRIX,
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
@@ -161,11 +162,11 @@ def _handle_send(args):
     platform = platform_map.get(platform_name)
     if not platform:
         avail = ", ".join(platform_map.keys())
-        return json.dumps({"error": f"Unknown platform: {platform_name}. Available: {avail}"})
+        return tool_error(f"Unknown platform: {platform_name}. Available: {avail}")
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
-        return json.dumps({"error": f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables."})
+        return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
 
     from gateway.platforms.base import BasePlatformAdapter
 
@@ -399,6 +400,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SENDBLUE:
             result = await _send_sendblue(chat_id, chunk)
+        elif platform == Platform.BLUEBUBBLES:
+            result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -929,6 +932,33 @@ async def _send_wecom(extra, chat_id, message):
         return _error(f"WeCom send failed: {e}")
 
 
+async def _send_bluebubbles(extra, chat_id, message):
+    """Send via BlueBubbles iMessage server using the adapter's REST API."""
+    try:
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
+        if not check_bluebubbles_requirements():
+            return {"error": "BlueBubbles requirements not met (need aiohttp + httpx)."}
+    except ImportError:
+        return {"error": "BlueBubbles adapter not available."}
+
+    try:
+        from gateway.config import PlatformConfig
+        pconfig = PlatformConfig(extra=extra)
+        adapter = BlueBubblesAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return _error("BlueBubbles: failed to connect to server")
+        try:
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return _error(f"BlueBubbles send failed: {result.error}")
+            return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
+        finally:
+            await adapter.disconnect()
+    except Exception as e:
+        return _error(f"BlueBubbles send failed: {e}")
+
+
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
     """Send via Feishu/Lark using the adapter's send pipeline."""
     try:
@@ -999,7 +1029,7 @@ def _check_send_message():
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="send_message",

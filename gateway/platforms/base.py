@@ -124,7 +124,14 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
 
     Returns:
         Absolute path to the cached image file as a string.
+
+    Raises:
+        ValueError: If the URL targets a private/internal network (SSRF protection).
     """
+    from tools.url_safety import is_safe_url
+    if not is_safe_url(url):
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
+
     import asyncio
     import httpx
     import logging as _logging
@@ -232,7 +239,14 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
 
     Returns:
         Absolute path to the cached audio file as a string.
+
+    Raises:
+        ValueError: If the URL targets a private/internal network (SSRF protection).
     """
+    from tools.url_safety import is_safe_url
+    if not is_safe_url(url):
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
+
     import asyncio
     import httpx
     import logging as _logging
@@ -284,6 +298,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    ".log": "text/plain",
     ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -393,6 +408,10 @@ class MessageEvent:
     # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
     auto_skill: Optional[str] = None
     
+    # Internal flag — set for synthetic events (e.g. background process
+    # completion notifications) that must bypass user authorization checks.
+    internal: bool = False
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
@@ -1105,6 +1124,22 @@ class BasePlatformAdapter(ABC):
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
 
+    @staticmethod
+    def _merge_caption(existing_text: Optional[str], new_text: str) -> str:
+        """Merge a new caption into existing text, avoiding duplicates.
+
+        Uses line-by-line exact match (not substring) to prevent false positives
+        where a shorter caption is silently dropped because it appears as a
+        substring of a longer one (e.g. "Meeting" inside "Meeting agenda").
+        Whitespace is normalised for comparison.
+        """
+        if not existing_text:
+            return new_text
+        existing_captions = [c.strip() for c in existing_text.split("\n\n")]
+        if new_text.strip() not in existing_captions:
+            return f"{existing_text}\n\n{new_text}".strip()
+        return existing_text
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -1164,10 +1199,7 @@ class BasePlatformAdapter(ABC):
                     existing.media_urls.extend(event.media_urls)
                     existing.media_types.extend(event.media_types)
                     if event.text:
-                        if not existing.text:
-                            existing.text = event.text
-                        elif event.text not in existing.text:
-                            existing.text = f"{existing.text}\n\n{event.text}".strip()
+                        existing.text = self._merge_caption(existing.text, event.text)
                 else:
                     self._pending_messages[session_key] = event
                 return  # Don't interrupt now - will run after current task completes

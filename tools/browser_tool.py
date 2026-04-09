@@ -146,15 +146,11 @@ def _get_command_timeout() -> int:
     ``DEFAULT_COMMAND_TIMEOUT`` (30s) if unset or unreadable.
     """
     try:
-        hermes_home = get_hermes_home()
-        config_path = hermes_home / "config.yaml"
-        if config_path.exists():
-            import yaml
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            val = cfg.get("browser", {}).get("command_timeout")
-            if val is not None:
-                return max(int(val), 5)  # Floor at 5s to avoid instant kills
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg.get("browser", {}).get("command_timeout")
+        if val is not None:
+            return max(int(val), 5)  # Floor at 5s to avoid instant kills
     except Exception as e:
         logger.debug("Could not read command_timeout from config: %s", e)
     return DEFAULT_COMMAND_TIMEOUT
@@ -259,23 +255,19 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
 
     _cloud_provider_resolved = True
     try:
-        hermes_home = get_hermes_home()
-        config_path = hermes_home / "config.yaml"
-        if config_path.exists():
-            import yaml
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            browser_cfg = cfg.get("browser", {})
-            provider_key = None
-            if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
-                provider_key = normalize_browser_cloud_provider(
-                    browser_cfg.get("cloud_provider")
-                )
-                if provider_key == "local":
-                    _cached_cloud_provider = None
-                    return None
-            if provider_key and provider_key in _PROVIDER_REGISTRY:
-                _cached_cloud_provider = _PROVIDER_REGISTRY[provider_key]()
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        provider_key = None
+        if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
+            provider_key = normalize_browser_cloud_provider(
+                browser_cfg.get("cloud_provider")
+            )
+            if provider_key == "local":
+                _cached_cloud_provider = None
+                return None
+        if provider_key and provider_key in _PROVIDER_REGISTRY:
+            _cached_cloud_provider = _PROVIDER_REGISTRY[provider_key]()
     except Exception as e:
         logger.debug("Could not read cloud_provider from config: %s", e)
 
@@ -326,13 +318,9 @@ def _allow_private_urls() -> bool:
     _allow_private_urls_resolved = True
     _cached_allow_private_urls = False  # safe default
     try:
-        hermes_home = get_hermes_home()
-        config_path = hermes_home / "config.yaml"
-        if config_path.exists():
-            import yaml
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            _cached_allow_private_urls = bool(cfg.get("browser", {}).get("allow_private_urls"))
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        _cached_allow_private_urls = bool(cfg.get("browser", {}).get("allow_private_urls"))
     except Exception as e:
         logger.debug("Could not read allow_private_urls from config: %s", e)
     return _cached_allow_private_urls
@@ -889,7 +877,11 @@ def _run_browser_command(
         # Local mode — launch a headless Chromium instance
         backend_args = ["--session", session_info["session_name"]]
 
-    cmd_parts = browser_cmd.split() + backend_args + [
+    # Keep concrete executable paths intact, even when they contain spaces.
+    # Only the synthetic npx fallback needs to expand into multiple argv items.
+    cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
+
+    cmd_parts = cmd_prefix + backend_args + [
         "--json",
         command
     ] + args
@@ -1618,7 +1610,7 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
                 "error": "JavaScript evaluation is not supported by this Camofox server. "
                          "Use browser_snapshot or browser_vision to inspect page state.",
             })
-        return json.dumps({"success": False, "error": error_msg})
+        return tool_error(error_msg, success=False)
 
 
 def _maybe_start_recording(task_id: str):
@@ -1626,14 +1618,10 @@ def _maybe_start_recording(task_id: str):
     if task_id in _recording_sessions:
         return
     try:
+        from hermes_cli.config import read_raw_config
         hermes_home = get_hermes_home()
-        config_path = hermes_home / "config.yaml"
-        record_enabled = False
-        if config_path.exists():
-            import yaml
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            record_enabled = cfg.get("browser", {}).get("record_sessions", False)
+        cfg = read_raw_config()
+        record_enabled = cfg.get("browser", {}).get("record_sessions", False)
         
         if not record_enabled:
             return
@@ -1947,11 +1935,15 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     if task_id is None:
         task_id = "default"
     
-    # Also clean up Camofox session if running in Camofox mode
+    # Also clean up Camofox session if running in Camofox mode.
+    # Skip full close when managed persistence is enabled — the browser
+    # profile (and its session cookies) must survive across agent tasks.
+    # The inactivity reaper still frees idle resources.
     if _is_camofox_mode():
         try:
-            from tools.browser_camofox import camofox_close
-            camofox_close(task_id)
+            from tools.browser_camofox import camofox_close, camofox_soft_cleanup
+            if not camofox_soft_cleanup(task_id):
+                camofox_close(task_id)
         except Exception as e:
             logger.debug("Camofox cleanup for task %s: %s", task_id, e)
 
@@ -2102,7 +2094,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 _BROWSER_SCHEMA_MAP = {s["name"]: s for s in BROWSER_TOOL_SCHEMAS}
 

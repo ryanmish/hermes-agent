@@ -34,6 +34,7 @@ import requests
 
 from hermes_cli.config import load_config
 from tools.browser_camofox_state import get_camofox_identity
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,8 @@ def _managed_persistence_enabled() -> bool:
     """
     try:
         camofox_cfg = load_config().get("browser", {}).get("camofox", {})
-    except Exception:
+    except Exception as exc:
+        logger.warning("managed_persistence check failed, defaulting to disabled: %s", exc)
         return False
     return bool(camofox_cfg.get("managed_persistence"))
 
@@ -169,6 +171,22 @@ def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
     task_id = task_id or "default"
     with _sessions_lock:
         return _sessions.pop(task_id, None)
+
+
+def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
+    """Release the in-memory session without destroying the server-side context.
+
+    When managed persistence is enabled the browser profile (and its cookies)
+    must survive across agent tasks.  This helper drops only the local tracking
+    entry and returns ``True``.  When managed persistence is *not* enabled it
+    does nothing and returns ``False`` so the caller can fall back to
+    :func:`camofox_close`.
+    """
+    if _managed_persistence_enabled():
+        _drop_session(task_id)
+        logger.debug("Camofox soft cleanup for task %s (managed persistence)", task_id)
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +277,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
 
         return json.dumps(result)
     except requests.HTTPError as e:
-        return json.dumps({"success": False, "error": f"Navigation failed: {e}"})
+        return tool_error(f"Navigation failed: {e}", success=False)
     except requests.ConnectionError:
         return json.dumps({
             "success": False,
@@ -268,7 +286,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                      "or: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser",
         })
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return tool_error(str(e), success=False)
 
 
 def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
@@ -277,7 +295,7 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
-            return json.dumps({"success": False, "error": "No browser session. Call browser_navigate first."})
+            return tool_error("No browser session. Call browser_navigate first.", success=False)
 
         data = _get(
             f"/tabs/{session['tab_id']}/snapshot",
@@ -306,7 +324,7 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
             "element_count": refs_count,
         })
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return tool_error(str(e), success=False)
 
 
 def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
@@ -314,7 +332,7 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
-            return json.dumps({"success": False, "error": "No browser session. Call browser_navigate first."})
+            return tool_error("No browser session. Call browser_navigate first.", success=False)
 
         # Strip @ prefix if present (our tool convention)
         clean_ref = ref.lstrip("@")
@@ -329,7 +347,7 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
             "url": data.get("url", ""),
         })
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return tool_error(str(e), success=False)
 
 
 def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
@@ -337,7 +355,7 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
-            return json.dumps({"success": False, "error": "No browser session. Call browser_navigate first."})
+            return tool_error("No browser session. Call browser_navigate first.", success=False)
 
         clean_ref = ref.lstrip("@")
 
@@ -351,7 +369,7 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
             "element": clean_ref,
         })
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return tool_error(str(e), success=False)
 
 
 def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
@@ -359,7 +377,7 @@ def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
-            return json.dumps({"success": False, "error": "No browser session. Call browser_navigate first."})
+            return tool_error("No browser session. Call browser_navigate first.", success=False)
 
         _post(
             f"/tabs/{session['tab_id']}/scroll",
@@ -367,7 +385,7 @@ def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
         )
         return json.dumps({"success": True, "scrolled": direction})
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return tool_error(str(e), success=False)
 
 
 def camofox_back(task_id: Optional[str] = None) -> str:
@@ -375,7 +393,7 @@ def camofox_back(task_id: Optional[str] = None) -> str:
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
-            return json.dumps({"success": False, "error": "No browser session. Call browser_navigate first."})
+            return tool_error("No browser session. Call browser_navigate first.", success=False)
 
         data = _post(
             f"/tabs/{session['tab_id']}/back",
@@ -383,7 +401,7 @@ def camofox_back(task_id: Optional[str] = None) -> str:
         )
         return json.dumps({"success": True, "url": data.get("url", "")})
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return tool_error(str(e), success=False)
 
 
 def camofox_press(key: str, task_id: Optional[str] = None) -> str:
@@ -391,7 +409,7 @@ def camofox_press(key: str, task_id: Optional[str] = None) -> str:
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
-            return json.dumps({"success": False, "error": "No browser session. Call browser_navigate first."})
+            return tool_error("No browser session. Call browser_navigate first.", success=False)
 
         _post(
             f"/tabs/{session['tab_id']}/press",
@@ -399,7 +417,7 @@ def camofox_press(key: str, task_id: Optional[str] = None) -> str:
         )
         return json.dumps({"success": True, "pressed": key})
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return tool_error(str(e), success=False)
 
 
 def camofox_close(task_id: Optional[str] = None) -> str:
@@ -426,7 +444,7 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
-            return json.dumps({"success": False, "error": "No browser session. Call browser_navigate first."})
+            return tool_error("No browser session. Call browser_navigate first.", success=False)
 
         import re
 
@@ -461,7 +479,7 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
             "count": len(images),
         })
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return tool_error(str(e), success=False)
 
 
 def camofox_vision(question: str, annotate: bool = False,
@@ -470,7 +488,7 @@ def camofox_vision(question: str, annotate: bool = False,
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
-            return json.dumps({"success": False, "error": "No browser session. Call browser_navigate first."})
+            return tool_error("No browser session. Call browser_navigate first.", success=False)
 
         # Get screenshot as binary PNG
         resp = _get_raw(
@@ -551,7 +569,7 @@ def camofox_vision(question: str, annotate: bool = False,
             "screenshot_path": screenshot_path,
         })
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return tool_error(str(e), success=False)
 
 
 def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:

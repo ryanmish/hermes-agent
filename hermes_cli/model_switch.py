@@ -537,8 +537,11 @@ def switch_model(
                     )
             else:
                 # --- Step c: On aggregator, convert vendor:model to vendor/model ---
+                # Only convert when there's no slash — a slash means the name
+                # is already in vendor/model format and the colon is a variant
+                # tag (:free, :extended, :fast) that must be preserved.
                 colon_pos = raw_input.find(":")
-                if colon_pos > 0 and is_aggregator(current_provider):
+                if colon_pos > 0 and "/" not in raw_input and is_aggregator(current_provider):
                     left = raw_input[:colon_pos].strip().lower()
                     right = raw_input[colon_pos + 1:].strip()
                     if left and right:
@@ -730,6 +733,7 @@ def list_authenticated_providers(
         fetch_models_dev,
         get_provider_info as _mdev_pinfo,
     )
+    from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
 
     results: List[dict] = []
@@ -750,9 +754,16 @@ def list_authenticated_providers(
         if not isinstance(pdata, dict):
             continue
 
-        env_vars = pdata.get("env", [])
-        if not isinstance(env_vars, list):
-            continue
+        # Prefer auth.py PROVIDER_REGISTRY for env var names — it's our
+        # source of truth.  models.dev can have wrong mappings (e.g.
+        # minimax-cn → MINIMAX_API_KEY instead of MINIMAX_CN_API_KEY).
+        pconfig = PROVIDER_REGISTRY.get(hermes_id)
+        if pconfig and pconfig.api_key_env_vars:
+            env_vars = list(pconfig.api_key_env_vars)
+        else:
+            env_vars = pdata.get("env", [])
+            if not isinstance(env_vars, list):
+                continue
 
         # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
@@ -791,12 +802,12 @@ def list_authenticated_providers(
         if overlay.auth_type in ("oauth_device_code", "oauth_external", "external_process"):
             # These use auth stores, not env vars — check for auth.json entries
             try:
-                from hermes_cli.auth import _read_auth_store
-                store = _read_auth_store()
-                if store and pid in store:
+                from hermes_cli.auth import _load_auth_store
+                store = _load_auth_store()
+                if store and (pid in store.get("providers", {}) or pid in store.get("credential_pool", {})):
                     has_creds = True
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Auth store check failed for %s: %s", pid, exc)
         if not has_creds:
             continue
 

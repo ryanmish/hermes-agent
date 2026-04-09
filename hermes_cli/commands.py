@@ -87,8 +87,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--global]"),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
-    CommandDef("prompt", "View/set custom system prompt", "Configuration",
-               cli_only=True, args_hint="[text]", subcommands=("clear",)),
+
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
@@ -129,7 +128,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
     CommandDef("help", "Show available commands", "Info"),
-    CommandDef("usage", "Show token usage for the current session", "Info"),
+    CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
@@ -293,14 +292,8 @@ def _resolve_config_gates() -> set[str]:
     if not gated:
         return set()
     try:
-        import yaml
-        from hermes_constants import get_hermes_home
-        config_path = str(get_hermes_home() / "config.yaml")
-        if os.path.exists(config_path):
-            with open(config_path, encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
-        else:
-            cfg = {}
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
     except Exception:
         return set()
     result: set[str] = set()
