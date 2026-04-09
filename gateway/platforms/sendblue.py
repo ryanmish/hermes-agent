@@ -87,6 +87,7 @@ class SendBlueAdapter(BasePlatformAdapter):
         self._webhook_port: int = int(
             os.getenv("SENDBLUE_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
         )
+        self._webhook_secret: str = os.getenv("SENDBLUE_WEBHOOK_SECRET", "")
         self._runner = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
         # Active typing indicator tasks keyed by recipient number
@@ -327,6 +328,17 @@ class SendBlueAdapter(BasePlatformAdapter):
 
     async def _handle_webhook(self, request) -> "aiohttp.web.Response":
         from aiohttp import web
+        import hmac
+
+        # Verify webhook secret if configured
+        if self._webhook_secret:
+            provided = (
+                request.headers.get("X-Webhook-Secret", "")
+                or request.query.get("secret", "")
+            )
+            if not hmac.compare_digest(provided, self._webhook_secret):
+                logger.warning("[sendblue] webhook rejected: invalid secret")
+                return web.json_response({"error": "unauthorized"}, status=401)
 
         try:
             payload = await request.json()
