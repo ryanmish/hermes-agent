@@ -185,8 +185,11 @@ class SendBlueAdapter(BasePlatformAdapter):
 
         app = web.Application()
         app.router.add_post("/webhooks/sendblue", self._handle_webhook)
-        # Also accept POSTs at root for backwards-compat with existing
-        # SendBlue dashboard webhook URL (was handled by the old proxy)
+        # Accept the old webhook path so SendBlue dashboard doesn't need updating
+        app.router.add_post(
+            "/webhooks/sendblue-ac0660715352608f697448b6d669b842",
+            self._handle_webhook,
+        )
         app.router.add_post("/", self._handle_webhook)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
 
