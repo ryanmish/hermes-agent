@@ -63,6 +63,7 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    SENDBLUE = "sendblue"
 
 
 @dataclass
@@ -286,6 +287,9 @@ class GatewayConfig:
                 connected.append(platform)
             # WeCom uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
+                connected.append(platform)
+            # SendBlue uses API key/secret pair
+            elif platform == Platform.SENDBLUE and os.getenv("SENDBLUE_API_KEY"):
                 connected.append(platform)
         return connected
     
@@ -926,6 +930,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=wecom_home,
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # SendBlue (iMessage)
+    sb_key = os.getenv("SENDBLUE_API_KEY")
+    if sb_key:
+        if Platform.SENDBLUE not in config.platforms:
+            config.platforms[Platform.SENDBLUE] = PlatformConfig()
+        config.platforms[Platform.SENDBLUE].enabled = True
+        config.platforms[Platform.SENDBLUE].api_key = sb_key
+    sb_home = os.getenv("SENDBLUE_HOME_CHANNEL")
+    if sb_home and Platform.SENDBLUE in config.platforms:
+        config.platforms[Platform.SENDBLUE].home_channel = HomeChannel(
+            platform=Platform.SENDBLUE,
+            chat_id=sb_home,
+            name=os.getenv("SENDBLUE_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

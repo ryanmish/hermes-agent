@@ -156,6 +156,7 @@ def _handle_send(args):
         "wecom": Platform.WECOM,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "sendblue": Platform.SENDBLUE,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -396,6 +397,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.SENDBLUE:
+            result = await _send_sendblue(chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -721,6 +724,62 @@ async def _send_sms(auth_token, chat_id, message):
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
     except Exception as e:
         return _error(f"SMS send failed: {e}")
+
+
+async def _send_sendblue(chat_id, message):
+    """Send a single iMessage via SendBlue REST API.
+
+    Chunking is handled by _send_to_platform() before this is called.
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    api_key = os.getenv("SENDBLUE_API_KEY", "")
+    api_secret = os.getenv("SENDBLUE_API_SECRET", "")
+    from_number = os.getenv("SENDBLUE_FROM_NUMBER", "")
+    if not api_key or not api_secret or not from_number:
+        return {"error": "SendBlue not configured (SENDBLUE_API_KEY, SENDBLUE_API_SECRET, SENDBLUE_FROM_NUMBER required)"}
+
+    # Strip markdown — iMessage renders it as literal characters
+    message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"\*(.+?)\*", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"__(.+?)__", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"_(.+?)_", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"```[a-z]*\n?", "", message)
+    message = re.sub(r"`(.+?)`", r"\1", message)
+    message = re.sub(r"^#{1,6}\s+", "", message, flags=re.MULTILINE)
+    message = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", message)
+    message = re.sub(r"\n{3,}", "\n\n", message)
+    message = message.strip()
+
+    try:
+        headers = {
+            "sb-api-key-id": api_key,
+            "sb-api-secret-key": api_secret,
+            "Content-Type": "application/json",
+        }
+        body = {
+            "number": chat_id,
+            "from_number": from_number,
+            "content": message,
+        }
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.post(
+                "https://api.sendblue.com/api/send-message",
+                json=body,
+                headers=headers,
+            ) as resp:
+                result = await resp.json()
+                if resp.status >= 400:
+                    error_msg = result.get("error_message", str(result))
+                    return _error(f"SendBlue API error ({resp.status}): {error_msg}")
+                msg_handle = result.get("message_handle", "")
+                return {"success": True, "platform": "sendblue", "chat_id": chat_id, "message_id": msg_handle}
+    except Exception as e:
+        return _error(f"SendBlue send failed: {e}")
 
 
 async def _send_mattermost(token, extra, chat_id, message):

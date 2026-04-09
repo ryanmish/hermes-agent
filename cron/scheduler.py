@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
-    "wecom", "sms", "email", "webhook",
+    "wecom", "sms", "email", "webhook", "sendblue",
 })
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
@@ -198,6 +198,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
         "wecom": Platform.WECOM,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "sendblue": Platform.SENDBLUE,
     }
     platform = platform_map.get(platform_name.lower())
     if not platform:

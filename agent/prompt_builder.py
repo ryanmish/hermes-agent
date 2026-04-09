@@ -325,6 +325,15 @@ PLATFORM_HINTS = {
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
         "characters, so be brief and direct."
     ),
+    "sendblue": (
+        "You are communicating via iMessage through the SendBlue platform. "
+        "Use plain text only — no markdown, no formatting. iMessage supports "
+        "longer messages but keep responses conversational and natural. "
+        "You can split your response into multiple iMessage bubbles by separating "
+        "sections with || (double pipe). This makes long responses feel more "
+        "natural in a text conversation. For example: 'First thought||Second thought' "
+        "sends as two separate bubbles."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000

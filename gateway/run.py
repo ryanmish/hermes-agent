@@ -1649,6 +1649,13 @@ class GatewayRunner:
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter
 
+        elif platform == Platform.SENDBLUE:
+            from gateway.platforms.sendblue import SendBlueAdapter, check_sendblue_requirements
+            if not check_sendblue_requirements():
+                logger.warning("SendBlue: dependencies not met (need aiohttp + SENDBLUE_API_KEY/SECRET)")
+                return None
+            return SendBlueAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -1687,6 +1694,7 @@ class GatewayRunner:
             Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
             Platform.FEISHU: "FEISHU_ALLOWED_USERS",
             Platform.WECOM: "WECOM_ALLOWED_USERS",
+            Platform.SENDBLUE: "SENDBLUE_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -1701,6 +1709,7 @@ class GatewayRunner:
             Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
             Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
             Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
+            Platform.SENDBLUE: "SENDBLUE_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -5487,7 +5496,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.SENDBLUE, Platform.LOCAL,
     })
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
