@@ -16,11 +16,16 @@ Gateway-specific env vars:
 """
 
 import asyncio
+import collections
 import json
 import logging
+import mimetypes
 import os
 import re
-from typing import Any, Dict, Optional
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -28,6 +33,9 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_image_from_url,
+    cache_audio_from_url,
+    cache_document_from_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +49,53 @@ MULTI_BUBBLE_DELAY = 1.2  # seconds between bubbles for natural feel
 
 # E.164 phone number pattern for redaction
 _PHONE_RE = re.compile(r"\+[1-9]\d{6,14}")
+
+# Recent inbound message cache: keyed by chat_id -> {message_handle, payload, timestamp}
+# Used by send_reaction() so the agent can react to the latest message without
+# needing to track message_handles explicitly.
+_RECENT_INBOUND_TTL = 3600  # 1 hour
+_recent_inbound: Dict[str, dict] = {}
+
+
+def remember_recent_inbound(chat_id: str, message_handle: str, payload: dict) -> None:
+    """Cache the most recent inbound message for a chat (for tapback reactions)."""
+    _recent_inbound[chat_id] = {
+        "message_handle": message_handle,
+        "payload": payload,
+        "ts": time.monotonic(),
+    }
+    # Prune stale entries
+    cutoff = time.monotonic() - _RECENT_INBOUND_TTL
+    stale = [k for k, v in _recent_inbound.items() if v["ts"] < cutoff]
+    for k in stale:
+        _recent_inbound.pop(k, None)
+
+
+def get_recent_inbound(chat_id: str) -> Optional[dict]:
+    """Get the most recent inbound message for a chat, or None if expired."""
+    entry = _recent_inbound.get(chat_id)
+    if entry and (time.monotonic() - entry["ts"]) < _RECENT_INBOUND_TTL:
+        return entry
+    return None
+
+
+# Media type detection from URLs/filenames
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".tiff"}
+_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+_AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".ogg", ".wav", ".caf"}
+
+
+def _guess_media_type(url: str) -> MessageType:
+    """Guess MessageType from a URL or filename."""
+    path = urlparse(url).path if url.startswith("http") else url
+    ext = Path(path).suffix.lower()
+    if ext in _IMAGE_EXTS:
+        return MessageType.PHOTO
+    if ext in _VIDEO_EXTS:
+        return MessageType.VIDEO
+    if ext in _AUDIO_EXTS:
+        return MessageType.VOICE
+    return MessageType.DOCUMENT
 
 
 def _redact_phone(phone: str) -> str:
@@ -293,12 +348,29 @@ class SendBlueAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def send_reaction(
-        self, message_handle: str, reaction: str
+        self,
+        message_handle: str,
+        reaction: str,
+        chat_id: Optional[str] = None,
     ) -> Optional[dict]:
         """Send a tapback reaction to a specific message.
 
+        If message_handle is empty and chat_id is provided, reacts to the
+        most recent inbound message in that chat (from the recent cache).
+
         Valid reactions: love, like, dislike, laugh, emphasize, question
         """
+        if not message_handle and chat_id:
+            recent = get_recent_inbound(chat_id)
+            if recent:
+                message_handle = recent["message_handle"]
+                logger.info(
+                    "[sendblue] using cached message_handle for reaction: %s",
+                    message_handle[:20],
+                )
+        if not message_handle:
+            logger.warning("[sendblue] send_reaction: no message_handle available")
+            return None
         return await self._sb_post("/api/send-reaction", {
             "from_number": self._from_number,
             "message_handle": message_handle,
@@ -362,8 +434,9 @@ class SendBlueAdapter(BasePlatformAdapter):
         from_number = payload.get("from_number", "").strip()
         content = payload.get("content", "").strip()
         message_handle = payload.get("message_handle", "")
+        media_url = payload.get("media_url", "").strip()
 
-        if not from_number or not content:
+        if not from_number or (not content and not media_url):
             return web.json_response({"ok": True})
 
         # Ignore messages from our own number
@@ -375,16 +448,54 @@ class SendBlueAdapter(BasePlatformAdapter):
             return web.json_response({"ok": True})
 
         logger.info(
-            "[sendblue] inbound from %s: %s",
+            "[sendblue] inbound from %s: %s%s",
             _redact_phone(from_number),
             content[:80],
+            f" [media: {media_url[:60]}]" if media_url else "",
         )
+
+        # Cache for tapback reactions
+        remember_recent_inbound(from_number, message_handle, payload)
 
         # Mark as read immediately (fire and forget)
         asyncio.create_task(self._mark_read(message_handle, from_number))
 
         # Start typing indicator loop
         self._start_typing(from_number)
+
+        # Determine message type and handle inbound media
+        msg_type = MessageType.TEXT
+        cached_urls: List[str] = []
+        media_types: List[str] = []
+
+        if media_url:
+            msg_type = _guess_media_type(media_url)
+            try:
+                if msg_type == MessageType.PHOTO:
+                    ext = Path(urlparse(media_url).path).suffix.lower() or ".jpg"
+                    cached_path = await cache_image_from_url(media_url, ext=ext)
+                    cached_urls.append(cached_path)
+                    mime = mimetypes.guess_type(f"file{ext}")[0] or "image/jpeg"
+                    media_types.append(mime)
+                    logger.info("[sendblue] cached inbound image: %s", cached_path)
+                elif msg_type == MessageType.VOICE:
+                    ext = Path(urlparse(media_url).path).suffix.lower() or ".m4a"
+                    cached_path = await cache_audio_from_url(media_url, ext=ext)
+                    cached_urls.append(cached_path)
+                    mime = mimetypes.guess_type(f"file{ext}")[0] or "audio/mpeg"
+                    media_types.append(mime)
+                    logger.info("[sendblue] cached inbound audio: %s", cached_path)
+                else:
+                    # Video, document, or unknown: pass URL through for agent
+                    cached_urls.append(media_url)
+                    ext = Path(urlparse(media_url).path).suffix.lower()
+                    mime = mimetypes.guess_type(f"file{ext}")[0] or "application/octet-stream"
+                    media_types.append(mime)
+                    logger.info("[sendblue] inbound media (passthrough): %s", media_url[:80])
+            except Exception as e:
+                logger.warning("[sendblue] failed to cache media: %s", e)
+                cached_urls.append(media_url)
+                media_types.append("unknown")
 
         source = self.build_source(
             chat_id=from_number,
@@ -395,10 +506,12 @@ class SendBlueAdapter(BasePlatformAdapter):
         )
         event = MessageEvent(
             text=content,
-            message_type=MessageType.TEXT,
+            message_type=msg_type,
             source=source,
             raw_message=payload,
             message_id=message_handle,
+            media_urls=cached_urls,
+            media_types=media_types,
         )
 
         # Non-blocking: ACK SendBlue fast, process in background
